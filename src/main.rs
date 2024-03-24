@@ -1,3 +1,4 @@
+use anyhow::Result;
 use std::{fs::read_to_string, sync::Arc};
 
 use askama::Template;
@@ -7,42 +8,31 @@ use axum::{
     Extension, Router,
 };
 use mongo::{HikeTrackerModel, MONGO_COLL_NAME_TRACKERS, MONGO_DB_NAME};
-use mongodb::{bson::oid::ObjectId, Client, Collection};
+use mongodb::{Client, Collection};
 use serde::{Deserialize, Serialize};
 
-use crate::mongo::init_mongo;
+use crate::mongo::{init_mongo, seed_data};
 
 mod mongo;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Hike {
+pub struct HikePeak {
     name: String,
+    elevation: u16,
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     // initialize tracing
     tracing_subscriber::fmt::init();
+
     pub const DEFAULT_MONGO_URI: &str = "mongodb://0.0.0.0:27017";
-    let client: Arc<Client> = Arc::new(init_mongo(DEFAULT_MONGO_URI).await);
 
-    let tracker = HikeTrackerModel {
-        _id: ObjectId::new(),
-        created_by_id: ObjectId::new(),
-        hikes: vec![],
-        created_at: chrono::Utc::now().into(),
-        updated_at: chrono::Utc::now().into(),
-    };
+    let client: Arc<Client> = Arc::new(init_mongo(DEFAULT_MONGO_URI).await?);
 
-    client
-        .database(MONGO_DB_NAME)
-        .collection(MONGO_COLL_NAME_TRACKERS)
-        .insert_one(tracker, None)
-        .await
-        .map_err(|_err| StatusCode::INTERNAL_SERVER_ERROR)
-        .unwrap();
+    seed_data(&client).await?;
 
-    let available_hikes: Vec<Hike> =
+    let available_hikes: Vec<HikePeak> =
         serde_json::from_str(&read_to_string("./hikes.json").unwrap()).unwrap();
 
     println!("hikes: {available_hikes:?}");
@@ -59,6 +49,8 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(host_port).await.unwrap();
     println!("Listening on: {host_port}");
     axum::serve(listener, app).await.unwrap();
+
+    Ok(())
 }
 
 #[derive(Template)]
