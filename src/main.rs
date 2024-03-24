@@ -1,8 +1,10 @@
 use anyhow::Result;
-use std::{fs::read_to_string, sync::Arc};
+use maud::{html, Markup, DOCTYPE};
+use std::{fs::read_to_string, ops::Deref, sync::Arc};
 
 use askama::Template;
 use axum::{
+    extract::Path,
     http::StatusCode,
     routing::{get, post},
     Extension, Router,
@@ -11,7 +13,7 @@ use mongo::{HikeTrackerModel, MONGO_COLL_NAME_TRACKERS, MONGO_DB_NAME};
 use mongodb::{Client, Collection};
 use serde::{Deserialize, Serialize};
 
-use crate::mongo::{init_mongo, seed_data};
+use crate::mongo::{get_tracker_collection, init_mongo, seed_data};
 
 mod mongo;
 
@@ -32,15 +34,17 @@ async fn main() -> Result<()> {
 
     seed_data(&client).await?;
 
-    let available_hikes: Vec<HikePeak> =
-        serde_json::from_str(&read_to_string("./hikes.json").unwrap()).unwrap();
-
-    println!("hikes: {available_hikes:?}");
+    let available_hikes: Arc<Vec<HikePeak>> =
+        Arc::new(serde_json::from_str(&read_to_string("./hike_peaks.json").unwrap()).unwrap());
 
     // build our application with a route
     let app = Router::new()
         // `GET /` goes to `root`
         .route("/", get(root))
+        .route("/peaks", get(hike_peak_list))
+        .route("/tracker/:id", get(display_tracker))
+        .route("/tracker/:id/edit", get(edit_tracker))
+        .layer(Extension(available_hikes))
         .route("/clicked", post(clicked))
         .layer(Extension(client));
 
@@ -51,6 +55,77 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await.unwrap();
 
     Ok(())
+}
+
+async fn hike_peak_list(Extension(hikes): Extension<Arc<Vec<HikePeak>>>) -> Markup {
+    let hikes = hikes.iter();
+    html! {
+        @for hike in hikes {
+            li { "name: "(hike.name)", elevation: "(hike.elevation) }
+        }
+    }
+}
+
+async fn display_tracker(
+    Path(id): Path<String>,
+    Extension(client): Extension<Arc<Client>>,
+) -> Markup {
+    if let Some(t) = get_tracker_collection(&client)
+        .find_one(bson::doc! { "name": id.clone() }, None)
+        .await
+        .unwrap()
+    {
+        boiler(html! {
+            div hx-target="this" hx-swap="outerHTML" {
+                div { label { "Name: " } (t.name) }
+                button hx-get={ "/tracker/"(id)"/edit" } class="btn btn-primary" { "Click To Edit" }
+            }
+        })
+    } else {
+        html! { h1 { "Not Found" } }
+    }
+}
+
+async fn edit_tracker(Path(id): Path<String>, Extension(client): Extension<Arc<Client>>) -> Markup {
+    if let Some(t) = get_tracker_collection(&client)
+        .find_one(bson::doc! { "name": id.clone() }, None)
+        .await
+        .unwrap()
+    {
+        html! {
+            form hx-put="/(id)" hx-target="this" hx-swap="outerHTML" {
+                div {
+                    label { "Name" }
+                    input type="text" name="trackerName" value=(t.name);
+                }
+                button class="btn" { "Submit" }
+                button class="btn" hx-get={ "/tracker/"(id) } { "Cancel" }
+            }
+        }
+    } else {
+        html! { h1 { "Not Found" } }
+    }
+}
+
+fn boiler(body: Markup) -> Markup {
+    html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+              meta charset="utf-8";
+              meta name="viewport" content="width=device-width, initial-scale=1";
+              title { "TEST" }
+              script src="https://unpkg.com/htmx.org@1.9.11" integrity="sha384-0gxUXCCR8yv9FM2b+U3FDbsKthCI66oH5IA9fHppQq9DDMHuMauqq1ZHBpJxQ0J0" crossorigin="anonymous" {}
+            }
+            body {
+                h1 { "The Body Mint" }
+                div id="the-one" {
+                  "Div"
+                }
+                (body)
+            }
+        }
+    }
 }
 
 #[derive(Template)]
